@@ -3,7 +3,7 @@ using BedrockPacket = BedrockProtocol.Packets.Packet;
 using RaknetCS.Network;
 using RaknetCS.Protocol.Raknet;
 using Serilog;
-
+using Org.BouncyCastle.Crypto;
 using QuantumMC.Network.Handler;
 
 namespace QuantumMC.Network
@@ -15,6 +15,16 @@ namespace QuantumMC.Network
         public SessionState State { get; set; } = SessionState.HandshakePhase;
         public bool CompressionReady { get; set; } = false;
         public string Username { get; set; } = string.Empty;
+
+        // Encryption State
+        public bool EncryptionEnabled { get; set; } = false;
+        public byte[]? AesKey { get; set; }
+        public byte[]? IvBase { get; set; }
+        public ulong SendCounter { get; set; } = 0;
+        public ulong ReceiveCounter { get; set; } = 0;
+        
+        public BedrockStreamCipher? Encryptor { get; private set; }
+        public BedrockStreamCipher? Decryptor { get; private set; }
 
         private readonly SessionManager _sessionManager;
 
@@ -37,7 +47,7 @@ namespace QuantumMC.Network
 
             try
             {
-                var decoded = PacketBatchCodec.Decode(data, CompressionReady);
+                var decoded = PacketBatchCodec.Decode(data, this);
 
                 foreach (var (packetId, payload) in decoded)
                 {
@@ -54,13 +64,24 @@ namespace QuantumMC.Network
         {
             try
             {
-                byte[] encoded = PacketBatchCodec.Encode(packet, CompressionReady);
+                byte[] encoded = PacketBatchCodec.Encode(packet, this);
                 RakSession.Send(Reliability.ReliableOrdered, encoded, immediate);
             }
             catch (Exception ex)
             {
                 Log.Error(ex, "Error sending packet {PacketType} to {EndPoint}", packet.GetType().Name, EndPoint);
             }
+        }
+
+        public void InitializeEncryption(byte[] key, byte[] iv)
+        {
+            AesKey = key;
+            IvBase = iv;
+            Encryptor = EncryptionUtils.CreateCipher(true, key, iv);
+            Decryptor = EncryptionUtils.CreateCipher(false, key, iv);
+            EncryptionEnabled = true;
+            
+            Log.Information("Encryption initialized for {Username} ({EndPoint})", Username, EndPoint);
         }
 
         public void Disconnect()

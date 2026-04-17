@@ -1,6 +1,11 @@
 using BedrockProtocol.Packets;
 using BedrockProtocol.Utils;
 using System.IO.Compression;
+using System.Security.Cryptography;
+using Org.BouncyCastle.Crypto;
+using Org.BouncyCastle.Crypto.Engines;
+using Org.BouncyCastle.Crypto.Modes;
+using Org.BouncyCastle.Crypto.Parameters;
 
 namespace QuantumMC.Network
 {
@@ -8,7 +13,12 @@ namespace QuantumMC.Network
     {
         private const byte GAME_PACKET_HEADER = 0xFE;
 
-        public static List<(uint packetId, byte[] payload)> Decode(byte[] data, bool compressionReady)
+        public static void ProcessStream(BedrockStreamCipher cipher, byte[] input, byte[] output)
+        {
+            cipher.ProcessBytes(input, 0, input.Length, output, 0);
+        }
+
+        public static List<(uint packetId, byte[] payload)> Decode(byte[] data, PlayerSession session)
         {
             var packets = new List<(uint, byte[])>();
 
@@ -22,19 +32,54 @@ namespace QuantumMC.Network
 
             byte[] batchPayload;
 
-            if (compressionReady)
+            if (session.EncryptionEnabled && session.Decryptor != null && session.AesKey != null)
+            {
+                long remaining = data.Length - stream.Position;
+                if (remaining < 8) throw new Exception("Encrypted payload too small to contain checksum.");
+                
+                byte[] encryptedData = stream.ReadBytes((int)remaining);
+                byte[] decrypted = new byte[encryptedData.Length];
+                
+                ProcessStream(session.Decryptor, encryptedData, decrypted);
+                
+                // The last 8 bytes are the manual checksum
+                byte[] plaintext = decrypted[..^8];
+                byte[] receivedChecksum = decrypted[^8..];
+                
+                byte[] expectedChecksum = EncryptionUtils.CalculateChecksum(plaintext, session.ReceiveCounter++, session.AesKey);
+                
+                if (!receivedChecksum.SequenceEqual(expectedChecksum))
+                {
+                    Serilog.Log.Error("Bedrock checksum mismatch! " +
+                        "Counter: {Counter}, " +
+                        "Received: {ReceivedHex}, " +
+                        "Expected: {ExpectedHex}, " +
+                        "Key: {KeyFp}",
+                        session.ReceiveCounter - 1,
+                        BitConverter.ToString(receivedChecksum).Replace("-", ""),
+                        BitConverter.ToString(expectedChecksum).Replace("-", ""),
+                        BitConverter.ToString(session.AesKey).Replace("-", "").Substring(0, 8));
+
+                    throw new Exception("Bedrock checksum verification failed! Encryption out of sync.");
+                }
+
+                batchPayload = plaintext;
+                stream = new BinaryStream(batchPayload);
+            }
+
+            if (session.CompressionReady)
             {
                 byte algorithm = stream.ReadByte();
                 
                 if (algorithm == 0x00) // Zlib
                 {
-                    long remaining = data.Length - stream.Position;
+                    long remaining = stream.GetBuffer().Length - stream.Position;
                     byte[] compressed = stream.ReadBytes((int)remaining);
                     batchPayload = ZlibDecompress(compressed);
                 }
                 else if (algorithm == 0xFF) // None
                 {
-                    long remaining = data.Length - stream.Position;
+                    long remaining = stream.GetBuffer().Length - stream.Position;
                     batchPayload = stream.ReadBytes((int)remaining);
                 }
                 else
@@ -44,7 +89,7 @@ namespace QuantumMC.Network
             }
             else
             {
-                long remaining = data.Length - stream.Position;
+                long remaining = stream.GetBuffer().Length - stream.Position;
                 batchPayload = stream.ReadBytes((int)remaining);
             }
 
@@ -59,7 +104,7 @@ namespace QuantumMC.Network
                 uint header = packetStream.ReadUnsignedVarInt();
                 uint packetId = header & 0x3FF;
 
-                long remaining = packetData.Length - packetStream.Position;
+                long remaining = packetData.Length - (int)packetStream.Position;
                 byte[] payload = packetStream.ReadBytes((int)remaining);
 
                 packets.Add((packetId, payload));
@@ -68,12 +113,12 @@ namespace QuantumMC.Network
             return packets;
         }
 
-        public static byte[] Encode(Packet packet, bool compressionReady, int threshold = 256)
+        public static byte[] Encode(Packet packet, PlayerSession session, int threshold = 256)
         {
-            return EncodeBatch(new List<Packet> { packet }, compressionReady, threshold);
+            return EncodeBatch(new List<Packet> { packet }, session, threshold);
         }
 
-        public static byte[] EncodeBatch(List<Packet> packets, bool compressionReady, int threshold = 256)
+        public static byte[] EncodeBatch(List<Packet> packets, PlayerSession session, int threshold = 256)
         {
             var bodyStream = new BinaryStream();
 
@@ -89,15 +134,15 @@ namespace QuantumMC.Network
                 bodyStream.WriteBytes(packetBody);
             }
 
-            return CreateBatch(bodyStream.GetBuffer(), compressionReady, threshold);
+            return CreateBatch(bodyStream.GetBuffer(), session, threshold);
         }
 
-        private static byte[] CreateBatch(byte[] payloads, bool compressionReady, int threshold)
+        private static byte[] CreateBatch(byte[] payloads, PlayerSession session, int threshold)
         {
             var batchStream = new BinaryStream();
             batchStream.WriteByte(GAME_PACKET_HEADER);
 
-            if (compressionReady)
+            if (session.CompressionReady)
             {
                 if (payloads.Length >= threshold)
                 {
@@ -114,6 +159,28 @@ namespace QuantumMC.Network
             else
             {
                 batchStream.WriteBytes(payloads);
+            }
+
+            if (session.EncryptionEnabled && session.Encryptor != null && session.AesKey != null)
+            {
+                byte[] rawPayload = batchStream.GetBuffer()[1..(int)batchStream.Position]; 
+                
+                // Calculate manual checksum before encryption
+                byte[] checksum = EncryptionUtils.CalculateChecksum(rawPayload, session.SendCounter++, session.AesKey);
+                
+                // Combine plaintext + checksum
+                byte[] toEncrypt = new byte[rawPayload.Length + checksum.Length];
+                Buffer.BlockCopy(rawPayload, 0, toEncrypt, 0, rawPayload.Length);
+                Buffer.BlockCopy(checksum, 0, toEncrypt, rawPayload.Length, checksum.Length);
+                
+                byte[] encrypted = new byte[toEncrypt.Length];
+                ProcessStream(session.Encryptor, toEncrypt, encrypted);
+
+                var encryptedStream = new BinaryStream();
+                encryptedStream.WriteByte(GAME_PACKET_HEADER);
+                encryptedStream.WriteBytes(encrypted);
+                
+                return encryptedStream.GetBuffer();
             }
 
             return batchStream.GetBuffer();

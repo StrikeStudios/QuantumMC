@@ -2,6 +2,3 @@
 .vs
 bin
 obj
-src/protocol-cs
-src/nbt-cs
-src/raknet-cs

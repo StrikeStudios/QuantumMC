@@ -1,4 +1,7 @@
 using System;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text.Json;
 using BedrockProtocol.Packets;
 using BedrockProtocol.Packets.Enums;
 using BedrockProtocol.Utils;
@@ -12,12 +15,177 @@ namespace QuantumMC.Network.Handler
         {
             var stream = new BinaryStream(payload);
             var packet = new LoginPacket();
-            packet.Decode(stream);
+            
+            // 1. Skip Protocol Version (4 bytes, Big Endian)
+            _ = stream.ReadBytes(4); // MUST use ReadBytes, Position += 4 breaks internal wrapper cache
+            
+            // 2. Read nested payload length (VarInt)
+            uint reqLen = stream.ReadUnsignedVarInt();
+            byte[] requestBytes = stream.ReadBytes((int)reqLen);
+            
+            // 3. Extract the inner string. 
+            // In 1.21.60+, it could be raw JSON, or still have a VarInt prefix.
+            string authInfoStr = "";
+            if (requestBytes.Length > 0)
+            {
+                if (requestBytes[0] == '{')
+                {
+                    // No prefix, raw JSON
+                    authInfoStr = System.Text.Encoding.UTF8.GetString(requestBytes);
+                }
+                else if (requestBytes.Length > 4 && requestBytes[4] == '{')
+                {
+                    // LE Int32 prefixed
+                    int strLen = BitConverter.ToInt32(requestBytes, 0);
+                    if (strLen > 0 && strLen <= requestBytes.Length - 4)
+                        authInfoStr = System.Text.Encoding.UTF8.GetString(requestBytes, 4, strLen);
+                }
+                else
+                {
+                    // It might be a VarInt BedrockString! Let's read it using a fresh stream
+                    var innerStream = new BinaryStream(requestBytes);
+                    uint innerLen = innerStream.ReadUnsignedVarInt();
+                    if (innerLen > 0 && innerLen <= requestBytes.Length)
+                    {
+                        byte[] strBytes = innerStream.ReadBytes((int)innerLen);
+                        authInfoStr = System.Text.Encoding.UTF8.GetString(strBytes);
+                    }
+                }
+            }
+            
+            // Reset stream and let library partially process just for ProtocolVersion metadata
+            stream.Position = 0;
+            try { packet.Decode(stream); } catch { /* Ignore malformed string parse exceptions in lib */ }
 
             Log.Information("Received Login from {EndPoint} (Protocol: {Protocol})", session.EndPoint, packet.ProtocolVersion);
 
-            session.Username = ExtractUsernameFromChain(packet.ChainDataJwt);
+            string clientPubKeyBase64 = string.Empty;
+            string username = "Unknown";
+            
+            try
+            {
+                // Parse the first string! In Bedrock 1.21.60+, it's AuthInfo JSON.
+                // In older versions, it's just the raw ChainData JSON.
+                authInfoStr = SanitizeJsonString(authInfoStr);
+                var authDoc = JsonDocument.Parse(authInfoStr);
+                
+                if (authDoc.RootElement.TryGetProperty("Token", out var tokenProp))
+                {
+                    // New OpenID Token format (AuthenticationType == 0/1)
+                    string token = tokenProp.GetString() ?? "";
+                    var tokenParts = token.Split('.');
+                    if (tokenParts.Length == 3)
+                    {
+                        string payloadBase64 = tokenParts[1];
+                        int padding = 4 - (payloadBase64.Length % 4);
+                        if (padding < 4) payloadBase64 += new string('=', padding);
+                        payloadBase64 = payloadBase64.Replace('-', '+').Replace('_', '/');
+                        
+                        var payloadDoc = JsonDocument.Parse(Convert.FromBase64String(payloadBase64));
+                        
+                        if (payloadDoc.RootElement.TryGetProperty("xname", out var xnameProp))
+                        {
+                            username = xnameProp.GetString() ?? "Unknown";
+                        }
+                        
+                        if (payloadDoc.RootElement.TryGetProperty("cpk", out var cpkProp))
+                        {
+                            clientPubKeyBase64 = cpkProp.GetString() ?? "";
+                        }
+                        
+                        Log.Information("Parsed OpenID login for {Username}", username);
+                    }
+                }
+                else if (authDoc.RootElement.TryGetProperty("Certificate", out var certProp))
+                {
+                    // Offline self-signed certificate wrapper
+                    string certStr = certProp.GetString() ?? "";
+                    username = ExtractUsernameFromChain(certStr);
+                    clientPubKeyBase64 = ExtractClientPublicKey(certStr);
+                }
+                else
+                {
+                    // Old native ChainData format wrapper
+                    username = ExtractUsernameFromChain(authInfoStr);
+                    clientPubKeyBase64 = ExtractClientPublicKey(authInfoStr);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Failed to parse AuthInfo/ChainData: {Msg}", ex.Message);
+            }
+            
+            session.Username = username;
             Log.Information("Player {Username} is logging in from {EndPoint}", session.Username, session.EndPoint);
+
+            try
+            {
+                // 1. Establish ECDH keys
+                using var serverEcdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP384);
+                string serverPublicKeyBase64 = Convert.ToBase64String(serverEcdh.PublicKey.ExportSubjectPublicKeyInfo());
+
+                // 2. Client public key is already extracted
+                if (string.IsNullOrEmpty(clientPubKeyBase64))
+                {
+                    Log.Error("Could not extract client public key! Server cannot establish encryption.");
+                    return; // abort
+                }
+                
+                byte[] clientPubKeyBytes = Convert.FromBase64String(clientPubKeyBase64);
+                
+                using var clientKey = ECDiffieHellman.Create();
+                clientKey.ImportSubjectPublicKeyInfo(clientPubKeyBytes, out _);
+
+                // 3. Shared Secret (Raw Agreement)
+                byte[] sharedSecret = serverEcdh.DeriveRawSecretAgreement(clientKey.PublicKey);
+                
+                Log.Debug("Derived shared secret of {Len} bytes: {Hex}", sharedSecret.Length, BitConverter.ToString(sharedSecret).Replace("-", "").Substring(0, 8) + "...");
+
+                // 4. Generate Server Salt and AES Key material
+                byte[] serverSalt = new byte[16];
+                RandomNumberGenerator.Fill(serverSalt);
+
+                var (aesKey, ivBase) = EncryptionUtils.DeriveKeys(sharedSecret, serverSalt);
+                
+                Log.Information("Encryption Key Derived. Salt: {SaltHex}, Key Fingerprint: {KeyFp}", 
+                    BitConverter.ToString(serverSalt).Replace("-", "").Substring(0, 8),
+                    BitConverter.ToString(aesKey).Replace("-", "").Substring(0, 8));
+
+                // 5. Generate ServerToClientHandshakePacket JWT
+                string headerJson = $"{{\"alg\":\"ES384\",\"x5u\":\"{serverPublicKeyBase64}\"}}";
+                // Reference implementations like PowerNukkitX use Standard Base64 for the salt string
+                string payloadJson = $"{{\"salt\":\"{Convert.ToBase64String(serverSalt)}\"}}";
+
+                string headerB64 = EncryptionUtils.Base64UrlEncode(System.Text.Encoding.UTF8.GetBytes(headerJson));
+                string payloadB64 = EncryptionUtils.Base64UrlEncode(System.Text.Encoding.UTF8.GetBytes(payloadJson));
+                
+                string unsignedToken = $"{headerB64}.{payloadB64}";
+                
+                // Sign using server ECDSA key
+                using var ecdsa = ECDsa.Create(serverEcdh.ExportParameters(true));
+                byte[] signature = ecdsa.SignData(System.Text.Encoding.UTF8.GetBytes(unsignedToken), HashAlgorithmName.SHA384);
+                string signatureB64 = EncryptionUtils.Base64UrlEncode(signature);
+
+                string jwtToken = $"{unsignedToken}.{signatureB64}";
+
+                var handshakePacket = new ServerToClientHandshakePacket
+                {
+                    JwtToken = jwtToken
+                };
+                
+                // Send the unencrypted handshake first
+                session.SendPacket(handshakePacket);
+
+                // Enable encryption AFTER sending the handshake
+                session.InitializeEncryption(aesKey, ivBase);
+                
+                Log.Information("Sent ServerToClientHandshakePacket and enabled encryption for {Username}", session.Username);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to initialize encryption for {Username}", session.Username);
+                return;
+            }
 
             var playStatus = new PlayStatusPacket
             {
@@ -44,35 +212,121 @@ namespace QuantumMC.Network.Handler
         {
             try
             {
-                string[] chains = chainDataJwt.Split('.');
-                if (chains.Length < 2)
-                    return "Unknown";
+                chainDataJwt = SanitizeJsonString(chainDataJwt);
+                using var doc = JsonDocument.Parse(chainDataJwt);
+                if (doc.RootElement.TryGetProperty("chain", out var chainArray) && chainArray.GetArrayLength() > 0)
+                {
+                    // Usually the the extraData with displayName is in the last JWT of the chain
+                    foreach (var jwtElem in chainArray.EnumerateArray())
+                    {
+                        var jwt = jwtElem.GetString();
+                        if (string.IsNullOrEmpty(jwt)) continue;
 
-                string payloadBase64 = chains[1];
-                int padding = 4 - (payloadBase64.Length % 4);
-                if (padding < 4)
-                    payloadBase64 += new string('=', padding);
+                        var parts = jwt.Split('.');
+                        if (parts.Length < 2) continue;
 
-                byte[] payloadBytes = Convert.FromBase64String(payloadBase64);
-                string payloadJson = System.Text.Encoding.UTF8.GetString(payloadBytes);
+                        string payloadBase64 = parts[1];
+                        int padding = 4 - (payloadBase64.Length % 4);
+                        if (padding < 4) payloadBase64 += new string('=', padding);
+                        payloadBase64 = payloadBase64.Replace('-', '+').Replace('_', '/');
 
-                int nameIndex = payloadJson.IndexOf("\"displayName\"", StringComparison.Ordinal);
-                if (nameIndex == -1)
-                    return "Unknown";
+                        byte[] payloadBytes = Convert.FromBase64String(payloadBase64);
+                        var payloadDoc = JsonDocument.Parse(payloadBytes);
 
-                int colonIndex = payloadJson.IndexOf(':', nameIndex);
-                int firstQuote = payloadJson.IndexOf('"', colonIndex + 1);
-                int secondQuote = payloadJson.IndexOf('"', firstQuote + 1);
-
-                if (firstQuote == -1 || secondQuote == -1)
-                    return "Unknown";
-
-                return payloadJson.Substring(firstQuote + 1, secondQuote - firstQuote - 1);
+                        if (payloadDoc.RootElement.TryGetProperty("extraData", out var extraData) &&
+                            extraData.TryGetProperty("displayName", out var displayName))
+                        {
+                            return displayName.GetString() ?? "Unknown";
+                        }
+                    }
+                }
+                return "Unknown";
             }
             catch
             {
                 return "Unknown";
             }
+        }
+
+        private string ExtractClientPublicKey(string chainDataJwt)
+        {
+            try
+            {
+                chainDataJwt = SanitizeJsonString(chainDataJwt);
+                using var doc = JsonDocument.Parse(chainDataJwt);
+                if (doc.RootElement.TryGetProperty("chain", out var chainArray) && chainArray.GetArrayLength() > 0)
+                {
+                    // Scan backwards, the client key is usually in the last tokens.
+                    for (int i = chainArray.GetArrayLength() - 1; i >= 0; i--)
+                    {
+                        var jwt = chainArray[i].GetString();
+                        if (string.IsNullOrEmpty(jwt)) continue;
+
+                        var parts = jwt.Split('.');
+                        if (parts.Length < 2) continue;
+
+                        // Check Header for x5u
+                        string headerBase64 = parts[0];
+                        int padding = 4 - (headerBase64.Length % 4);
+                        if (padding < 4) headerBase64 += new string('=', padding);
+                        headerBase64 = headerBase64.Replace('-', '+').Replace('_', '/');
+                        
+                        try
+                        {
+                            byte[] headerBytes = Convert.FromBase64String(headerBase64);
+                            var headerDoc = JsonDocument.Parse(headerBytes);
+                            if (headerDoc.RootElement.TryGetProperty("x5u", out var x5u))
+                            {
+                                string val = x5u.GetString();
+                                if (!string.IsNullOrEmpty(val)) return val;
+                            }
+                        }
+                        catch { /* Ignore invalid headers */ }
+
+                        // Check Payload for identityPublicKey
+                        string payloadBase64 = parts[1];
+                        padding = 4 - (payloadBase64.Length % 4);
+                        if (padding < 4) payloadBase64 += new string('=', padding);
+                        payloadBase64 = payloadBase64.Replace('-', '+').Replace('_', '/');
+
+                        try
+                        {
+                            byte[] payloadBytes = Convert.FromBase64String(payloadBase64);
+                            var payloadDoc = JsonDocument.Parse(payloadBytes);
+                            if (payloadDoc.RootElement.TryGetProperty("identityPublicKey", out var pubKey))
+                            {
+                                string val = pubKey.GetString();
+                                if (!string.IsNullOrEmpty(val)) return val;
+                            }
+                            
+                            if (payloadDoc.RootElement.TryGetProperty("extraData", out var extraData) &&
+                                extraData.TryGetProperty("identityPublicKey", out pubKey))
+                            {
+                                string val = pubKey.GetString();
+                                if (!string.IsNullOrEmpty(val)) return val;
+                            }
+                        }
+                        catch { /* Ignore invalid payloads */ }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning("Failed to extract client public key from ChainData: {Message}", ex.Message);
+            }
+            
+            return string.Empty;
+        }
+
+        private static string SanitizeJsonString(string json)
+        {
+            int start = json.IndexOf('{');
+            int end = json.LastIndexOf('}');
+            if (start != -1 && end != -1 && end >= start)
+            {
+                return json.Substring(start, end - start + 1);
+            }
+            return json;
         }
     }
 }

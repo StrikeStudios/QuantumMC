@@ -8,8 +8,7 @@ namespace QuantumMC
 {
     public class Server
     {
-        private readonly RaknetListener _listener;
-        private readonly SessionManager _sessionManager;
+        private readonly Network.Network _network;
         private readonly int _port;
         private readonly int _maxPlayers;
         private bool _running;
@@ -18,14 +17,7 @@ namespace QuantumMC
         {
             _port = port;
             _maxPlayers = maxPlayers;
-            _sessionManager = new SessionManager();
-
-            var endpoint = new IPEndPoint(IPAddress.Any, _port);
-            _listener = new RaknetListener(endpoint);
-
-            UpdateMotd();
-
-            _listener.SessionConnected += OnSessionConnected;
+            _network = new Network.Network(_port, _maxPlayers);
         }
 
         public void Start()
@@ -44,7 +36,7 @@ namespace QuantumMC
             Log.Information("Listening on port {Port} (Max players: {MaxPlayers})", _port, _maxPlayers);
             Log.Information("");
 
-            _listener.BeginListener();
+            _network.Start();
 
             Log.Information("Server started! Waiting for connections...");
 
@@ -67,24 +59,9 @@ namespace QuantumMC
 
             Log.Information("Stopping server...");
 
-            _listener.StopListener();
+            _network.Stop();
 
             Log.Information("Server stopped.");
-        }
-
-        private void OnSessionConnected(RaknetSession rakSession)
-        {
-            Log.Information("New RakNet session from {EndPoint}", rakSession.PeerEndPoint);
-
-            var playerSession = new PlayerSession(rakSession, _sessionManager);
-            _sessionManager.AddSession(rakSession.PeerEndPoint, playerSession);
-
-            UpdateMotd();
-        }
-
-        private void UpdateMotd()
-        {
-            _listener.Motd = $"MCPE;QuantumMC Server;{Protocol.CurrentProtocol};{Protocol.MinecraftVersion};{_sessionManager.OnlineCount};{_maxPlayers};{DateTimeOffset.Now.ToUnixTimeMilliseconds()};QuantumMC;Survival;1;{_port};{_port + 1};";
         }
     }
 }
