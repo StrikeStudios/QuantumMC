@@ -24,6 +24,7 @@ namespace QuantumMC
             catch (Exception ex)
             {
                 Log.Fatal(ex, "Server crashed!");
+                Log.Fatal(ex, "Please Report This Crash into our discord");
             }
             finally
             {
