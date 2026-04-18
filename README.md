@@ -4,20 +4,11 @@
 </p>
 </h1>
 
-<h4 align="center">Highly customized, lightweight and super-fast Minecraft: Bedrock Edition server software written in modern C#.</h4>
-
 <p align="center">
   <a href="#the-vision">The Vision</a> •
   <a href="#how-to-use">How To Use</a> •
   <a href="#credits">Credits</a> •
   <a href="#license">License</a>
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/Minecraft BE-1.26.10-brightgreen?style=for-the-badge">
-  <img src="https://img.shields.io/badge/.NET-9.0-blueviolet?style=for-the-badge&logo=.net">
-  <img src="https://img.shields.io/github/actions/workflow/status/BedrockSharp/QuantumMC/build.yml?style=for-the-badge" alt="Build Status">
-  <img src="https://img.shields.io/badge/Status-In%20Development-yellow?style=for-the-badge">
 </p>
 
 ---
