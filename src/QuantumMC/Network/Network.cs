@@ -25,7 +25,7 @@ namespace QuantumMC.Network
             World = new World.World(new FlatWorldGenerator());
             Advertisement = new MotdAdvertisement
             {
-                Motd = "QuantumMC Server",
+                Motd = "A QuantumMC Server",
                 SubMotd = "QuantumMC",
                 Protocol = BedrockProtocol.Protocol.CurrentProtocol.ToString(),
                 Version = BedrockProtocol.Protocol.MinecraftVersion,
@@ -73,7 +73,7 @@ namespace QuantumMC.Network
 
     public class MotdAdvertisement
     {
-        public string Motd { get; set; } = "QuantumMC Server";
+        public string Motd { get; set; } = "A QuantumMC Server";
         public string SubMotd { get; set; } = "QuantumMC";
         public string Protocol { get; set; } = "944";
         public string Version { get; set; } = "1.26.10";
