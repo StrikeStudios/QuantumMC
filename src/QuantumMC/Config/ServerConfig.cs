@@ -15,5 +15,7 @@ namespace QuantumMC.Config
 
         public string WorldName { get; set; } = "world";
         public string WorldGenerator { get; set; } = "flat";
+
+        // TODO: Add more options later
     }
 }
