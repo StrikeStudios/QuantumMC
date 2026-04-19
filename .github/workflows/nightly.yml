@@ -32,10 +32,12 @@ jobs:
             -f tag_name=nightly \
             -f name="Nightly Build" \
             -F prerelease=true \
-            -F make_latest=false
+            -f make_latest=false
 
           gh api repos/$GH_REPO/releases/$RELEASE_ID/assets --jq '.[].id' | \
-            xargs -I{} gh api -X DELETE repos/$GH_REPO/releases/assets/{}
+            while read -r asset_id; do
+              gh api -X DELETE repos/$GH_REPO/releases/assets/$asset_id
+            done
 
           gh release upload nightly "$ASSET" --clobber
         else
