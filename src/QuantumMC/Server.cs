@@ -15,18 +15,19 @@ namespace QuantumMC
         private readonly int _port;
         private readonly int _maxPlayers;
         private bool _running;
-        private ServerConfig _config;
+        public ServerConfig Config;
+        public World.WorldManager WorldManager;
 
         public Server(ServerConfig config)
         {
             Instance = this;
 
-            _config = config;
+            Config = config;
             _port = config.Port;
             _maxPlayers = config.MaxPlayers;
 
+            WorldManager = new World.WorldManager();
             _network = new Network.Network(config);
-
         }
 
         public void Start()
@@ -39,12 +40,14 @@ namespace QuantumMC
             Log.Information("| |__| | |_| | (_| | | | | |_| |_| | | | | | | |  | | |___ ");
             Log.Information(" \\___\\_\\\\__,_|\\__,_|_| |_|\\__|\\__,_|_| |_| |_|_|  |_|\\____|");
             Log.Information("");
-            Log.Information("QuantumMC — Minecraft: Bedrock Edition Server");
+            Log.Information("QuantumMC - Minecraft: Bedrock Edition Server");
             Log.Information("Protocol: {Protocol} | Version: {Version}", Protocol.CurrentProtocol, Protocol.MinecraftVersion);
             Log.Information("Listening on port {Port} (Max players: {MaxPlayers})", _port, _maxPlayers);
             Log.Information("");
 
             Registry.BlockRegistry.Init();
+            WorldManager.LoadWorlds();
+            
             _network.Start();
             Log.Information("Server started! Waiting for connections...");
 

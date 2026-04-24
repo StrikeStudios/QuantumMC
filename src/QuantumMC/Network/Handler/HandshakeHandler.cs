@@ -11,6 +11,8 @@ namespace QuantumMC.Network.Handler
         {
             Log.Information("Received ClientToServerHandshake from {Username}", session.Username);
 
+            session.World = Server.Instance.WorldManager.DefaultWorld;
+
             var playStatus = new PlayStatusPacket
             {
                 Status = PlayStatus.LoginSuccess
