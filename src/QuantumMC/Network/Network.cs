@@ -1,5 +1,6 @@
 using System.Net;
 using BedrockProtocol;
+using BedrockPacket = BedrockProtocol.Packets.Packet;
 using RaknetCS.Network;
 using Serilog;
 using QuantumMC.World;
@@ -63,6 +64,16 @@ namespace QuantumMC.Network
         {
             Advertisement.OnlineCount = _sessionManager.OnlineCount;
             _listener.Motd = Advertisement.ToString();
+        }
+
+        public void BroadcastPacket(BedrockPacket packet, bool immediate = true, PlayerSession? Excluded = null)
+        {
+            var sessions = _sessionManager.GetAllSessions();
+            foreach (var session in sessions)
+            {
+                if (session == Excluded) continue;
+                session.SendPacket(packet, immediate);
+            }
         }
     }
 

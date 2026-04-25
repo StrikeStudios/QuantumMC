@@ -1,6 +1,7 @@
 using BedrockProtocol.Packets;
 using BedrockProtocol.Packets.Types;
 using BedrockProtocol.Utils;
+using QuantumMC.Utils;
 using Serilog;
 
 namespace QuantumMC.Network.Handler
@@ -45,41 +46,7 @@ namespace QuantumMC.Network.Handler
             };
             session.SendPacket(radiusResponse);
 
-            int spawnX = session.Player.World.SpawnX;
-            int spawnY = session.Player.World.SpawnY;
-            int spawnZ = session.Player.World.SpawnZ;
-
-            var publisherUpdate = new NetworkChunkPublisherUpdatePacket
-            {
-                Position = new BlockPosition(spawnX, spawnY, spawnZ),
-                Radius = grantedRadius * 16 
-            };
-            session.SendPacket(publisherUpdate);
-
-            int centerChunkX = spawnX >> 4;
-            int centerChunkZ = spawnZ >> 4;
-
-            var chunks = session.Player.World.GetChunksInRadius(centerChunkX, centerChunkZ, grantedRadius);
-
-            foreach (var chunk in chunks)
-            {
-                var chunkData = chunk.Serialize();
-                byte[] chunkPayload = chunkData.Payload;
-                int subChunkCount = chunkData.SubChunkCount;
-
-                var levelChunkPacket = new LevelChunkPacket
-                {
-                    ChunkX = chunk.ChunkX,
-                    ChunkZ = chunk.ChunkZ,
-                    Dimension = 0,
-                    SubChunkCount = subChunkCount,
-                    CacheEnabled = false,
-                    RequestSubChunks = false,
-                    Payload = chunkPayload
-                };
-
-                session.SendPacket(levelChunkPacket);
-            }
+            session.Player.UpdateChunks();
 
             var spawnStatus = new PlayStatusPacket
             {
@@ -94,7 +61,8 @@ namespace QuantumMC.Network.Handler
             var packet = new SetLocalPlayerAsInitializedPacket();
             packet.Decode(stream);
 
-            session.State = SessionState.PlayPhase;
+            Server.Instance.SendTranslation(TextFormat.Yellow + "%multiplayer.player.joined", [session.Username]);
+            session.State = SessionState.InGamePhase;
         }
     }
 }

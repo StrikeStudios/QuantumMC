@@ -73,7 +73,7 @@ namespace QuantumMC.Network
             {
                 Log.Error(ex, "Error sending packet {PacketType} to {EndPoint}", packet.GetType().Name, EndPoint);
             }
-        }
+        }   
 
         public void InitializeEncryption(byte[] key, byte[] iv)
         {
@@ -82,7 +82,6 @@ namespace QuantumMC.Network
             Encryptor = EncryptionUtils.CreateCipher(true, key, iv);
             Decryptor = EncryptionUtils.CreateCipher(false, key, iv);
             EncryptionEnabled = true;
-
         }
 
         public void Disconnect()

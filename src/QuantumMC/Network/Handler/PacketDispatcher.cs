@@ -16,6 +16,7 @@ namespace QuantumMC.Network.Handler
             var resourcePackHandler = new ResourcePackHandler();
             var sessionHandler = new SessionStartPacketHandler();
             var playHandler = new PlayHandler();
+            var inGameHandler = new InGameHandler();
 
             _handlers.Add((uint)PacketIds.Login, loginHandler);
             _handlers.Add((uint)PacketIds.ClientToServerHandshake, handshakeHandler);
@@ -23,6 +24,10 @@ namespace QuantumMC.Network.Handler
             _handlers.Add((uint)PacketIds.RequestNetworkSettings, sessionHandler);
             _handlers.Add((uint)PacketIds.RequestChunkRadius, playHandler);
             _handlers.Add((uint)PacketIds.SetLocalPlayerAsInitialized, playHandler);
+            _handlers.Add((uint)PacketIds.Text, inGameHandler);
+            _handlers.Add((uint)PacketIds.MovePlayer, inGameHandler);
+            _handlers.Add((uint)PacketIds.PlayerAuthInput, inGameHandler);
+            _handlers.Add((uint)PacketIds.Animate, inGameHandler);
         }
 
         public static void Dispatch(PlayerSession session, uint packetId, byte[] payload)

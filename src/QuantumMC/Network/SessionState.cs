@@ -5,6 +5,7 @@ namespace QuantumMC.Network
         HandshakePhase,
         LoginPhase,
         ResourcePackPhase,
-        PlayPhase
+        PlayPhase,
+        InGamePhase
     }
 }

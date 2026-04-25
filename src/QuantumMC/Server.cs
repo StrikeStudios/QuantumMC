@@ -1,5 +1,7 @@
 using System.Net;
 using BedrockProtocol;
+using BedrockProtocol.Packets;
+using BedrockProtocol.Packets.Enums;
 using QuantumMC.Network;
 using QuantumMC.Config;
 using RaknetCS.Network;
@@ -72,6 +74,19 @@ namespace QuantumMC
             Network.Stop();
             if (PlayerProvider is IDisposable disposable) disposable.Dispose();
             Log.Information("Server has stopped.");
+        }
+
+        public void SendTranslation(string Message, List<string> Args)
+        {
+            var textPacket = new TextPacket
+            {
+                Type = TextType.Translation,
+                NeedsTranslation = false,
+                Message = Message,
+                Parameters = Args
+            };
+
+            Network.BroadcastPacket(textPacket, false);
         }
     }
 }
