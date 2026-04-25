@@ -41,7 +41,7 @@ namespace QuantumMC.Player
         public float Yaw { get; set; }
         public float Pitch { get; set; }
         public float HeadYaw { get; set; }
-        public int Gamemode { get; set; } = 0;
+        public int Gamemode { get; set; } = 1;
         public int ChunkRadius { get; set; } = 4;
         
         public HashSet<(int X, int Z)> SentChunks { get; } = new();

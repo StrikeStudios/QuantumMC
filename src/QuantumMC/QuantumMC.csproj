@@ -8,7 +8,7 @@
     <Nullable>enable</Nullable>
 
     <PackageId>QuantumMC</PackageId>
-    <Version>0.0.2</Version>
+    <Version>0.0.1-alpha2</Version>
     <Authors>BedrockSharp</Authors>
     <Company>BedrockSharp</Company>
     <Description>Highly customized, lightweight and super-fast Minecraft: Bedrock Edition server software written in modern C#.</Description>
